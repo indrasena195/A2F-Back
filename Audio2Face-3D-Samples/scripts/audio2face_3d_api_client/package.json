@@ -1,0 +1,19 @@
+{
+  "name": "audio2face_3d_api_client",
+  "version": "1.0.0",
+  "description": "A sample Python application to showcase the Audio2Face-3D NIM hosted on NVIDIA Cloud Functions (NVCF).",
+  "main": "azuretts.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node http_socket.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "body-parser": "^1.20.3",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  }
+}
