@@ -11,7 +11,7 @@ hyperframe==6.0.1
 idna==3.10
 multidict==6.1.0
 numpy==1.26.4
-nvidia-ace @ /opt/render/project/src/dependencies/nvidia_ace-1.2.0-py3-none-any.whl
+nvidia-ace @ ./dependencies/nvidia_ace-1.2.0-py3-none-any.whl
 pandas==2.2.2
 protobuf==4.24.1
 protobuf_gen==0.0.4
