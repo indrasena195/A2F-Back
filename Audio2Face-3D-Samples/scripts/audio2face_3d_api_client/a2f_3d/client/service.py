@@ -26,6 +26,7 @@ from nvidia_ace.emotion_aggregate.v1_pb2 import EmotionAggregate
 import json
 import azure.cognitiveservices.speech as speechsdk
 import websockets
+import io
 
 # Bit depth of the audio file, only 16 bit PCM audio is currently supported.
 BITS_PER_SAMPLE = 16
@@ -105,7 +106,7 @@ async def connect_to_server(uri):
         print(f"Failed to connect to server: {e}")
         websocket_connection = None
 
-async def broadcast_animation_data(data):
+async def send_to_server(data, is_binary=False):
     global websocket_connection
     if websocket_connection is None:
         print("Not connected to server. Attempting to connect...")
@@ -114,18 +115,26 @@ async def broadcast_animation_data(data):
             print("Still not connected. Exiting.")
             return
     try:
-        await websocket_connection.send(json.dumps(data))
-        print("Data sent to server")
+        if is_binary:
+            await websocket_connection.send(data)
+            print("Data sent to server")
+        else:
+            await websocket_connection.send(json.dumps(data))
     except websockets.ConnectionClosed:
         print("Connection closed. Attempting to reconnect...")
         websocket_connection = None  # Clear the old connection
         await connect_to_server("ws://localhost:2000")  # Reconnect to the server
         if websocket_connection:
-            await broadcast_animation_data(data)  # Retry sending the data
+            await send_to_server(data, is_binary)  # Retry sending the data
         else:
             print("Reconnection failed.")
     except Exception as e:
         print(f"Error sending data: {e}")
+
+# Process animation data
+async def broadcast_animation_data(data):
+    """Send animation data to WebSocket."""
+    await send_to_server({"type": "animation_data", "data": data}, is_binary=False)
 
 async def read_from_stream(stream):
     # List of blendshapes names recovered from the model data in the AnimationDataStreamHeader
@@ -163,9 +172,6 @@ async def read_from_stream(stream):
               # Save data to JSON.
             with open(f"{dir_name}/animation_frames.json", "w") as file:
                 json.dump(df_animation.to_dict(orient="records"), file, indent=4)
-            # df_animation.to_csv(f"{dir_name}/animation_frames.csv")
-            # df_smoothed_output.to_csv(f"{dir_name}/a2f_smoothed_emotion_output.csv")
-            # df_input.to_csv(f"{dir_name}/a2f_input_emotions.csv")
             return
 
         if message.HasField("animation_data_stream_header"):
@@ -187,11 +193,9 @@ async def read_from_stream(stream):
                 bs_values_dict = dict(zip(bs_names, blendshapes.values))
                 time_code = blendshapes.time_code
                 # Append an object to the list of animation key frames
-                animation_key_frames.append({
-                    "timeCode": time_code,
-                    "blendShapes": bs_values_dict
-                })
-                print("animation_key_frames", f"{time_code}", bs_values_dict)
+                animation_key_frames.append({"timeCode": time_code, "blendShapes": bs_values_dict})
+                # Print the animation data with timecode
+                # print("animation_key_frames", f"{time_code}", bs_values_dict)
 
             # Send data to WebSocket server
             await broadcast_animation_data({
@@ -214,27 +218,101 @@ async def main():
     await connect_to_server(uri)  # Connect to the server once
 
 
+class PushAudioOutputStreamCallback(speechsdk.audio.PushAudioOutputStreamCallback):
+        def __init__(self):
+            super().__init__()
+            self.audio_buffer = io.BytesIO()  
+            self._audio_data = bytearray()
+
+        # def write(self, audio_data):
+        #     """Receive audio from Azure Speech SDK and store it."""
+        #     if audio_data:
+        #         self.audio_buffer.write(audio_data)
+        #     return len(audio_data) 
+        
+        def write(self, audio_buffer: memoryview) -> int:
+            self._audio_data.extend(audio_buffer)
+            self.audio_buffer.write(audio_buffer) 
+            return audio_buffer.nbytes
+        
+        def close(self) -> None:
+            pass 
+
+        # def close(self):
+        #     """Close the audio stream and reset buffer position."""
+        #     self.audio_buffer.seek(0)
+        #     print(f" Audio stream closed. Total size: {self.audio_buffer.getbuffer().nbytes} bytes")
+
+        def get_audio_data(self) -> bytes:
+            return bytes(self._audio_data) 
+
+        async def broadcast_audio_data(self):
+            """Send buffered audio to WebSocket in chunks."""
+            chunk_size = 4096
+            total_sent = 0
+            self.audio_buffer.seek(0)  # Ensure we start from the beginning
+
+            if self.audio_buffer.getbuffer().nbytes == 0:
+                print(" Error: No audio data in buffer!")
+                return  # Stop sending if there's no data
+
+            while True:
+                chunk = self.audio_buffer.read(chunk_size)
+                if not chunk:
+                    break
+                total_sent += len(chunk)
+                await send_to_server(chunk, is_binary=True)  
+
+            print(f" Finished sending audio. Total bytes sent: {total_sent}")
+
+
+
+
 async def synthesize_audio_from_text(text):
-    """Synthesize text to speech using Azure TTS and return the audio buffer."""
+    """Synthesize text to speech and stream audio chunks using PushAudioOutputStream."""
+
     speech_config = speechsdk.SpeechConfig(
-        subscription="464ad874589040bbb1a107c263027973",
+        subscription="464ad874589040bbb1a107c263027973",  
         region="southeastasia",
     )
     speech_config.speech_synthesis_voice_name = "en-US-JennyNeural"
     speech_config.set_speech_synthesis_output_format(
-        speechsdk.SpeechSynthesisOutputFormat.Riff16Khz16BitMonoPcm
+        speechsdk.SpeechSynthesisOutputFormat.Riff44100Hz16BitMonoPcm
     )
-    
-    synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=None)
-    stream = speechsdk.AudioDataStream(synthesizer.speak_text_async(text).get())
 
-    # Stream audio chunks
-    buffer = bytearray(4096)
-    while True:
-        read_count = stream.read_data(bytes(buffer))
-        if read_count == 0:
-            break
-        yield buffer[:read_count]
+    stream_callback = PushAudioOutputStreamCallback()
+    push_stream = speechsdk.audio.PushAudioOutputStream(stream_callback)
+
+    stream_config = speechsdk.audio.AudioOutputConfig(stream=push_stream)
+    synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=stream_config)
+
+    try:
+        result = synthesizer.speak_text_async(text).get()
+
+        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+            # print("Streaming audio...")
+            # await stream_callback.broadcast_audio_data()
+            audio_data = stream_callback.get_audio_data()
+            chunk_size = 4096
+            for i in range(0, len(audio_data), chunk_size):
+                chunk = audio_data[i:i + chunk_size]
+                yield chunk  # Yield the chunk!
+            # print("All audio data has been streamed.")
+            await stream_callback.broadcast_audio_data()
+            
+        elif result.reason == speechsdk.ResultReason.Canceled:
+            cancellation_details = result.cancellation_details
+            print(f"Speech synthesis canceled: {cancellation_details.reason}")
+            if cancellation_details.reason == speechsdk.CancellationReason.Error:
+                print(f"Error details: {cancellation_details.error_details}")
+            return 
+
+    except Exception as e:
+        print(f"Error in synthesize_audio_from_text: {e}")
+        return 
+
+    # finally:  
+    #     del synthesizer 
     
 
 async def write_to_stream(stream, config_path, text):

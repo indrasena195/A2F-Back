@@ -20,7 +20,7 @@ app.post('/send-text', (req, res) => {
         return res.status(400).send('Text is required');
     }
 
-    const apiKey = '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';
+    const apiKey = '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';
     const functionId = 'b85c53f3-5d18-4edf-8b12-875a400eb798';
     const pythonCommand = `python ./a2f_client.py "${text}" ./config/config_mark.yml --apikey ${apiKey} --function-id ${functionId}`;
 
@@ -35,10 +35,11 @@ app.post('/send-text', (req, res) => {
         }
 
         console.log(`Python script output: ${stdout}`);
+        res.status(200).send(stdout || 'Text processed successfully'); // Respond after execution finishes
         // res.send(stdout);
     });
 
-    res.status(200).send('Text received and processed');
+
 });
 
 // Create HTTP server
@@ -56,14 +57,27 @@ wss.on('connection', (ws) => {
     clients.add(ws);
 
     // Handle incoming messages
-    ws.on('message', (message) => {
+    ws.on('message', (message, isBinary) => {
         try {
-            const data = JSON.parse(message);
-            console.log(`Received data: ${JSON.stringify(data)}`);
-            // Broadcast data to all clients
-            broadcastData(data);
+
+            if (isBinary) {
+                // Handle binary audio data
+                // console.log('Received audio chunk (binary data)');
+                broadcastData(message, true);  // Send as binary
+            } else {
+                // Handle JSON data (animation)
+                const data = JSON.parse(message);
+                
+                if (data.type === 'animation_data') {
+                    // console.log('Received animation data:', data);
+                } else {
+                    console.warn('Received unknown data type:', data);
+                }
+                
+                broadcastData(data, false);  // Send as JSON
+            }
         } catch (error) {
-            console.error('Invalid JSON received:', error.message);
+            console.error('Error processing message:', error.message);
         }
     });
 
@@ -75,10 +89,14 @@ wss.on('connection', (ws) => {
 });
 
 // Broadcast data to all connected WebSocket clients
-function broadcastData(data) {
+function broadcastData(data, isBinary) {
     for (const client of clients) {
         if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify(data));
+            if (isBinary) {
+                client.send(data);  // Send binary audio directly
+            } else {
+                client.send(JSON.stringify(data));  // Send JSON data
+            }
         }
     }
 }
