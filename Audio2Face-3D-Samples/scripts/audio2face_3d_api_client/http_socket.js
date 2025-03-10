@@ -7,6 +7,7 @@ const WebSocket = require('ws');
 // Initialize Express
 const app = express();
 const PORT = 2000;
+const API = process.env.NV_API
 
 // Middleware
 app.use(cors());
@@ -20,7 +21,8 @@ app.post('/send-text', (req, res) => {
         return res.status(400).send('Text is required');
     }
 
-    const apiKey = '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';
+    // const apiKey = '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';
+    const apiKey = API;
     const functionId = 'b85c53f3-5d18-4edf-8b12-875a400eb798';
     const pythonCommand = `python ./a2f_client.py "${text}" ./config/config_mark.yml --apikey ${apiKey} --function-id ${functionId}`;
 
